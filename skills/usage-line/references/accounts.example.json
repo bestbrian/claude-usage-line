@@ -5,6 +5,7 @@
     {"all": ["Personal"], "label": "Personal", "cmux_color": "#2ECC71"}
   ],
   "00000000-0000-0000-0000-000000000000": {"label": "Side project"},
+  "codex": {"label": "GPT"},
   "anchors": {
     "00000000-0000-0000-0000-000000000000": {"week_reset": 1795600800, "orgName": "Side project's Organization"}
   }

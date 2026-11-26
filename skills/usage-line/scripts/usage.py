@@ -24,8 +24,10 @@ Optional settings in ~/.claude/statusline/accounts.json (see references/accounts
 
 Standard library only. It never prints anything but the status line, and never reads tokens.
 """
+import datetime
 import fcntl
 import json
+import math
 import os
 import pathlib
 import re
@@ -43,6 +45,14 @@ READINGS_MAX_AGE_S = 7 * 86400
 SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 SAFE_COLOR = re.compile(r"#?[A-Za-z0-9]{1,32}")  # "#10B981" or a name like "Purple"; never a "-flag"
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+CODEX_ID = "codex"  # Codex's numbers are saved as usage/codex.json and drawn like one more account
+# Newest day folders under ~/.codex/sessions to look through. A resumed session keeps writing to the
+# folder of the day it began, so a week is too short for anyone who resumes old sessions.
+CODEX_DAYS_SEARCHED = 31
+CODEX_LOGS_TRIED = 5  # newest logs tried for a usage record before giving up
+CODEX_TAIL_BYTES = 512 * 1024  # logs reach several MB; the latest usage record is near the end
+FIVE_HOUR_MINUTES, WEEK_MINUTES = 300, 10080
 
 GREEN, YELLOW, RED, DIM, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
 
@@ -141,6 +151,113 @@ def current_account():
         except Exception:
             pass
     return cached
+
+
+def codex_home():
+    return pathlib.Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+
+
+def newest_codex_logs():
+    """Codex session logs from the newest day folders, most recently written first. Logs live in
+    sessions/YYYY/MM/DD/, and a resumed session keeps writing to the folder of the day it began,
+    so the newest file by name is not always the newest by use."""
+    def newest_first(folder):
+        try:
+            return sorted(folder.iterdir(), key=lambda path: path.name, reverse=True)
+        except OSError:
+            return []
+    day_folders = [day for year in newest_first(codex_home() / "sessions")
+                   for month in newest_first(year) for day in newest_first(month)][:CODEX_DAYS_SEARCHED]
+    logs = []
+    for day in day_folders:
+        for log in newest_first(day):
+            try:
+                if log.suffix == ".jsonl" and log.is_file():
+                    logs.append((log.stat().st_mtime, log))
+            except OSError:
+                pass
+    return [log for _, log in sorted(logs, reverse=True)]
+
+
+def last_codex_limits(log):
+    """(timestamp, rate_limits) from the last usage record in one Codex log, or None. Only the end of
+    the file is read, only lines that mention rate_limits are parsed, and only numbers are kept."""
+    try:
+        with open(log, "rb") as handle:
+            handle.seek(max(0, log.stat().st_size - CODEX_TAIL_BYTES))
+            tail = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        if '"rate_limits"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except (ValueError, RecursionError):
+            continue  # the first line of a tail is usually cut off; a freak line can nest too deep
+        payload = record.get("payload") if isinstance(record, dict) else None
+        limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+        if isinstance(limits, dict) and any(codex_windows(limits)):
+            return record.get("timestamp"), limits
+    return None
+
+
+def codex_windows(limits):
+    """(five_hour, weekly) windows from Codex's rate_limits, matched by length rather than by
+    "primary"/"secondary", since the order is Codex's to change."""
+    by_length = {}
+    for window in (limits.get("primary"), limits.get("secondary")):
+        if isinstance(window, dict) and finite_number(window.get("window_minutes")) is not None \
+                and finite_number(window.get("used_percent")) is not None:
+            by_length[int(window["window_minutes"])] = window
+    return by_length.get(FIVE_HOUR_MINUTES), by_length.get(WEEK_MINUTES)
+
+
+def finite_number(value):
+    """The value when it is a real, finite number, else None. Python's json reads NaN and Infinity,
+    and a saved NaN would break every redraw until Codex wrote again."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:  # an int too big for a float, such as 10**400
+        return None
+
+
+def epoch_from_iso(text):
+    try:
+        return datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def refresh_codex():
+    """Copy Codex's latest usage into usage/codex.json, so the line draws it like another account.
+    The newest log's path and write time are remembered, so an idle redraw reads nothing."""
+    logs = newest_codex_logs()
+    if not logs:
+        return
+    marker = BASE / "codex-source.json"
+    source = [str(logs[0]), logs[0].stat().st_mtime]
+    if read_json(marker) == source:
+        return
+    write_json(marker, source)
+    for log in logs[:CODEX_LOGS_TRIED]:
+        found = last_codex_limits(log)
+        if found:
+            break
+    else:
+        return
+    timestamp, limits = found
+    five, week = codex_windows(limits)
+    write_json(USAGE_DIR / f"{CODEX_ID}.json", {
+        "orgName": "Codex",
+        "five_used": finite_number((five or {}).get("used_percent")),
+        "five_resets": finite_number((five or {}).get("resets_at")),
+        "week_used": finite_number((week or {}).get("used_percent")),
+        "week_resets": finite_number((week or {}).get("resets_at")),
+        # Never later than now: a Codex clock that runs ahead would otherwise freeze the age at 0m.
+        "at": min(epoch_from_iso(timestamp) or log.stat().st_mtime, time.time())})
 
 
 WEEK_S = 7 * 86400
@@ -245,6 +362,9 @@ def note_session(session_id, org_id, label, now):
 
 
 def label_for(org_id, org_name, labels):
+    if org_id == CODEX_ID:
+        # Never run Codex through the Claude rules: a catch-all rule would call it "Org".
+        return clean(((labels or {}).get(CODEX_ID) or {}).get("label") or "Codex")
     custom = (labels or {}).get(org_id, {}).get("label") or account_rule(org_name).get("label")
     if custom:
         return clean(custom)
@@ -272,9 +392,12 @@ def reset_clock(resets_at):
 
 
 def age_text(seconds):
+    seconds = max(0, seconds)  # a clock that runs ahead must not print "-205m ago"
     if seconds < 3600:
         return f"{int(seconds // 60)}m ago"
-    return f"{int(seconds // 3600)}h ago"
+    if seconds < 2 * 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
 
 
 def main():
@@ -327,6 +450,11 @@ def draw():
         except Exception:
             pass
 
+    try:
+        refresh_codex()
+    except Exception:
+        pass  # a change in Codex's log format must never take the Claude numbers down with it
+
     parts = []
     showing_numbers = False
     if org_id:
@@ -341,7 +469,8 @@ def draw():
             text = f"{here}: waiting for first reply"
         parts.append(text)
 
-    for path in sorted(USAGE_DIR.glob("*.json")) if USAGE_DIR.exists() else []:
+    saved_accounts = sorted(USAGE_DIR.glob("*.json")) if USAGE_DIR.exists() else []
+    for path in sorted(saved_accounts, key=lambda path: path.stem == CODEX_ID):  # Codex last
         other_id = path.stem
         if other_id == org_id:
             continue

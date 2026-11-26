@@ -1,6 +1,6 @@
 ---
 name: usage-line
-description: Install, label and repair the Claude Code usage status line, which shows the 5-hour and weekly usage left on every Claude account someone uses, so they know when and where to switch. Use when someone asks to set up the usage line or usage viewer, wants to see their Claude limits or usage left in the status line, juggles several Claude accounts, asks to label accounts or color cmux workspaces by account, or says the usage line is wrong or missing.
+description: Install, label and repair the Claude Code usage status line, which shows the 5-hour and weekly usage left on every Claude account someone uses, so they know when and where to switch. It also shows Codex CLI usage when Codex is installed. Use when someone asks to set up the usage line or usage viewer, wants to see their Claude limits or usage left in the status line, juggles several Claude accounts, asks to label accounts or color cmux workspaces by account, asks to show or rename Codex usage, or says the usage line is wrong or missing.
 ---
 
 # Usage line
@@ -50,6 +50,13 @@ For short names, write `~/.claude/statusline/accounts.json`. Model it on `refere
 - `rules` match on parts of the org name and can set `cmux_color`. Inside cmux, the workspace then turns that color, so each account is easy to tell apart at a glance.
 - An `<orgId>` key with a `label` names one exact account.
 
+## Codex
+
+When Codex CLI is installed, its 5-hour and weekly usage shows as the last entry. The script reads the usage record near the end of the newest logs in `~/.codex/sessions` (or `$CODEX_HOME/sessions`), and keeps only the numbers in `~/.claude/statusline/usage/codex.json`. It never runs Codex or reads its login.
+- The entry is called "Codex". To rename it, add `"codex": {"label": "GPT"}` to accounts.json. Claude rules never apply to it.
+- Its numbers change only when Codex replies, so the age in brackets can be days.
+- If Codex isn't showing: check `ls ~/.codex/sessions` has recent logs, and that Codex is signed in with a ChatGPT plan, since API key logins record no limits.
+
 ## Anchors (only if labels swap after a /login)
 
 After a `/login`, a window that is still open keeps reporting its old account's numbers until its next reply, so for a moment the line can name the wrong account. Anchors fix that. Each account's weekly limit resets at the same time every week.
@@ -81,5 +88,6 @@ Only in `~/.claude/statusline/`:
 - `usage/<orgId>.json`: each account's last numbers.
 - `account-*.json`: which account each login folder is on (org id and name).
 - `readings/` and `sessions.json`: small per-window notes. Readings idle for a week are deleted.
+- `usage/codex.json` and `codex-source.json`: Codex's last numbers, and which log they came from.
 
 Files are created readable by their owner only, since an org name can contain an email address. It never reads tokens and never sends anything anywhere.
