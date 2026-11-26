@@ -39,7 +39,12 @@ def stamp() -> str:
 
 
 def backup(path: pathlib.Path, dry_run: bool) -> str:
-    copy = path.with_name(f"{path.name}.bak-usage-line-{stamp()}")
+    """Copy the file aside under a name no earlier backup has, so a second backup in the same
+    second (install then uninstall) never overwrites the original."""
+    base_name = f"{path.name}.bak-usage-line-{stamp()}"
+    copy, counter = path.with_name(base_name), 1
+    while copy.exists():
+        copy, counter = path.with_name(f"{base_name}-{counter}"), counter + 1
     if not dry_run:
         shutil.copy2(path, copy)
     return str(copy)
@@ -98,7 +103,9 @@ def install_settings(config_dir: pathlib.Path, replace: bool, dry_run: bool) -> 
     if current and not replace:
         return False, (f"{settings_path}: already has a different status line ({json.dumps(current)}). "
                        "Run again with --replace to swap it; a backup is kept.")
-    note = f" (backup {backup(settings_path.resolve(), dry_run)})" if settings_path.exists() else ""
+    # The backup sits next to settings.json even when that is a link into a dotfiles repo, so a
+    # copy holding "env" keys never lands somewhere that gets committed.
+    note = f" (backup {backup(settings_path, dry_run)})" if settings_path.exists() else ""
     if not dry_run:
         write_settings(settings_path, {**settings, "statusLine": STATUS_LINE})
     return True, f"{settings_path}: status line set{note}"

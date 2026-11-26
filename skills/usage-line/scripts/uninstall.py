@@ -21,7 +21,7 @@ from install import HOME, STATUS_LINE, TARGET_DIR, backup, read_settings, write_
 
 OWN_FOLDERS = ("usage", "readings", "cmux")
 OWN_FILE_PATTERNS = ("usage.py", "usage.py.bak-usage-line-*", "account-*.json", "sessions.json",
-                     "sessions.lock", "*.tmp")
+                     "sessions.lock", "*.[0-9]*.tmp")  # temp files are <name>.<pid>.tmp
 
 
 def purge() -> None:
@@ -33,7 +33,8 @@ def purge() -> None:
         shutil.rmtree(TARGET_DIR / name, ignore_errors=True)
     for pattern in OWN_FILE_PATTERNS:
         for path in TARGET_DIR.glob(pattern):
-            path.unlink()
+            if path.is_file() or path.is_symlink():
+                path.unlink()
     left = sorted(path.name for path in TARGET_DIR.iterdir())
     if left:
         print(f"{TARGET_DIR}: removed this tool's files, kept {', '.join(left)}")
@@ -51,13 +52,16 @@ def main(argv: list[str]) -> int:
     for raw in args.config_dir:
         settings_path = pathlib.Path(raw).expanduser() / "settings.json"
         settings, problem = read_settings(settings_path)
-        if problem or not settings:
+        if problem:
+            print(f"{settings_path}: {problem}, left alone. Fix it, then run this again.")
+            continue
+        if not settings:
             print(f"{settings_path}: nothing to do")
             continue
         if settings.get("statusLine") != STATUS_LINE:
             print(f"{settings_path}: status line is not this one, left alone")
             continue
-        kept = backup(settings_path.resolve(), dry_run=False)
+        kept = backup(settings_path, dry_run=False)  # next to the link, never inside a dotfiles repo
         write_settings(settings_path, {key: value for key, value in settings.items() if key != "statusLine"})
         print(f"{settings_path}: status line removed (backup {kept})")
     if args.purge:

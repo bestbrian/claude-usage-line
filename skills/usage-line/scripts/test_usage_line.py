@@ -239,11 +239,34 @@ class InstallTest(unittest.TestCase):
         folder = self.home / ".claude" / "statusline"
         (folder / "accounts.json").write_text("{}")
         (folder / "my-own-line.sh").write_text("echo hi")
+        (folder / "mine.tmp").write_text("a person's own temp file")
+        (folder / "notes.tmp").mkdir()
         (folder / "usage").mkdir()
         (folder / "usage" / "org.json").write_text("{}")
+        (folder / "sessions.12345.tmp").write_text("{}")
         code, out, _ = run("uninstall.py", self.home, args=["--purge"])
         self.assertEqual(code, 0, out)
-        self.assertEqual(sorted(path.name for path in folder.iterdir()), ["accounts.json", "my-own-line.sh"])
+        self.assertEqual(sorted(path.name for path in folder.iterdir()),
+                         ["accounts.json", "mine.tmp", "my-own-line.sh", "notes.tmp"])
+
+    def test_uninstall_says_when_settings_are_broken(self):
+        self.settings.parent.mkdir(parents=True)
+        self.settings.write_text("{broken")
+        code, out, _ = run("uninstall.py", self.home)
+        self.assertEqual(code, 0)
+        self.assertIn("not valid JSON, left alone", out)
+
+    def test_backups_of_a_linked_settings_file_stay_out_of_the_dotfiles_folder(self):
+        dotfiles = self.home / "dotfiles"
+        dotfiles.mkdir()
+        real = dotfiles / "claude-settings.json"
+        real.write_text(json.dumps({"env": {"SOME_KEY": "placeholder"}}))
+        self.settings.parent.mkdir(parents=True)
+        self.settings.symlink_to(real)
+        run("install.py", self.home)
+        run("uninstall.py", self.home)
+        self.assertEqual(sorted(path.name for path in dotfiles.iterdir()), ["claude-settings.json"])
+        self.assertEqual(len(list(self.settings.parent.glob("settings.json.bak-usage-line-*"))), 2)
 
     def test_broken_settings_are_left_alone(self):
         self.settings.parent.mkdir(parents=True)
