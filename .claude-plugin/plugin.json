@@ -1,0 +1,8 @@
+{
+  "name": "usage-line",
+  "version": "0.1.0",
+  "description": "A Claude Code status line that shows the 5-hour and weekly usage left on every Claude account you use, with an installer and repair guide an agent can run.",
+  "author": {
+    "name": "bestbrian"
+  }
+}

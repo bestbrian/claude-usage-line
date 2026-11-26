@@ -1,0 +1,11 @@
+{
+  "rules": [
+    {"all": ["Acme"], "label": "Work", "cmux_color": "#8E44AD"},
+    {"all": ["@gmail.com"], "label": "Gmail", "cmux_color": "#F5A623"},
+    {"all": ["Personal"], "label": "Personal", "cmux_color": "#2ECC71"}
+  ],
+  "00000000-0000-0000-0000-000000000000": {"label": "Side project"},
+  "anchors": {
+    "00000000-0000-0000-0000-000000000000": {"week_reset": 1795600800, "orgName": "Side project's Organization"}
+  }
+}
