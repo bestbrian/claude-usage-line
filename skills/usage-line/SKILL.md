@@ -1,6 +1,6 @@
 ---
 name: usage-line
-description: Install, label and repair the Claude Code usage status line, which shows the 5-hour and weekly usage left on every Claude account someone uses, so they know when and where to switch. It also shows Codex CLI usage when Codex is installed. Use when someone asks to set up the usage line or usage viewer, wants to see their Claude limits or usage left in the status line, juggles several Claude accounts, asks to label accounts or color cmux workspaces by account, asks to show or rename Codex usage, or says the usage line is wrong or missing.
+description: Install, label and repair the Claude Code usage status line, which shows the 5-hour and weekly usage left on every Claude account someone uses, so they know when and where to switch. It also shows Codex CLI usage when Codex is installed. Use when someone asks to set up the usage line or usage viewer, wants to see their Claude limits or usage left in the status line, juggles several Claude accounts, asks to label accounts or color cmux workspaces by account, asks to show or rename Codex usage, wants the usage line shorter or more compact (or spelled out again), or says the usage line is wrong or missing.
 ---
 
 # Usage line
@@ -8,10 +8,10 @@ description: Install, label and repair the Claude Code usage status line, which 
 A Claude Code status line that shows the usage left on the account the window is on, then the last-seen numbers for every other account:
 
 ```
-Usage · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h ago)
+Usage left · Work: 5h 62% (resets 3:40pm), week 48% | Personal: 5h 100%, week 12% (2h ago)
 ```
 
-Every percent is what is left, not what is used. `wk` is the weekly limit. `(2h ago)` is how old another account's numbers are: they update when a session on that account replies.
+Every percent is what is left, not what is used. `(2h ago)` is how old another account's numbers are: they update when a session on that account replies. People who know this can switch to the compact wording (see "Spelled out or compact" below).
 
 Green means 50% or more left, yellow 20 to 49%, red under 20%.
 
@@ -42,6 +42,22 @@ Show the person what it will change, then run it again without `--dry-run`.
 If a folder already has a different status line, the installer refuses and leaves it alone. Ask before using `--replace`, because their current status line goes away (a backup is kept next to settings.json).
 
 The line appears in each open window after its next reply. Until then that window's account says "waiting for first reply".
+
+Then show both wordings (below) and ask which they want. Spelled out is the default; set compact only if they pick it.
+
+## Spelled out or compact
+
+The line comes in two wordings. Show both when someone asks to make it shorter, or to spell it out again:
+
+```
+Usage left · Work: 5h 62% (resets 3:40pm), week 48% | Personal: 5h 100%, week 12% (2h ago)
+Usg · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h)
+```
+
+- Spelled out (the default) explains itself to someone seeing it for the first time.
+- Compact saves about 20 characters with several accounts. `Usg` is usage, `wk` is the weekly limit, and `(2h)` is how old another account's numbers are.
+- To pick compact, add `"compact": true` to `~/.claude/statusline/accounts.json`, creating the file if it doesn't exist and keeping anything already in it. Remove the key, or set it to `false`, to go back. Only `true` turns it on.
+- The change shows in each window at its next redraw. Nothing needs reinstalling.
 
 ## Labels and colors (optional)
 

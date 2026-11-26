@@ -23,6 +23,8 @@ Claude asks whether you use one login folder or one per account. It shows you wh
 
 Ask Claude to "label my accounts in the usage line". It reads each account's org name and writes short labels, like Work and Personal. If you use cmux, each label can carry a color, and cmux tints the workspace to match the account it's on.
 
+Want it shorter? Ask Claude to "make my usage line compact". `Usage left` becomes `Usg`, `week` becomes `wk`, and `(2h ago)` becomes `(2h)`. Ask again to spell it out.
+
 ## Codex too
 
 If Codex CLI is on your machine, the line shows its usage as one more entry, read from the usage records Codex writes to its own session logs (`~/.codex/sessions`, or `$CODEX_HOME`). It updates whenever you use Codex. Call it what you like with `"codex": {"label": "GPT"}` in `~/.claude/statusline/accounts.json`.

@@ -55,8 +55,8 @@ class StatusLineTest(unittest.TestCase):
         seed_account(self.home, self.config, "org-work", "Acme's Organization")
         code, out, _ = run("usage.py", self.home, stdin=status_input("s1", 38, 52), extra_env=self.env)
         self.assertEqual(code, 0)
-        self.assertTrue(out.startswith("Usage · Acme: 5h 62% (resets "), out)
-        self.assertIn("wk 48%", out)
+        self.assertTrue(out.startswith("Usage left · Acme: 5h 62% (resets "), out)
+        self.assertIn("week 48%", out)
         self.assertNotIn("% left", out)
 
     def test_other_accounts_show_with_their_age(self):
@@ -66,15 +66,37 @@ class StatusLineTest(unittest.TestCase):
         _, out, _ = run("usage.py", self.home, stdin=status_input("s2", 90, 95, NOW + 5 * 86400),
                         extra_env=self.env)
         first, second = out.strip().split(" | ")
-        self.assertTrue(first.startswith("Usage · someone: 5h 10% (resets "), first)
-        self.assertIn("Acme: 5h 90%, wk 80% (0m ago)", second)
+        self.assertTrue(first.startswith("Usage left · someone: 5h 10% (resets "), first)
+        self.assertIn("Acme: 5h 90%, week 80% (0m ago)", second)
 
     def test_labels_from_accounts_json(self):
         seed_account(self.home, self.config, "org-work", "Acme's Organization")
         (self.home / ".claude" / "statusline" / "accounts.json").write_text(
             json.dumps({"rules": [{"all": ["Acme"], "label": "Work"}]}))
         _, out, _ = run("usage.py", self.home, stdin=status_input("s1", 0, 0), extra_env=self.env)
-        self.assertTrue(out.startswith("Usage · Work: 5h 100%"), out)
+        self.assertTrue(out.startswith("Usage left · Work: 5h 100%"), out)
+
+    def two_accounts_line(self, settings):
+        (self.home / ".claude" / "statusline").mkdir(parents=True, exist_ok=True)
+        (self.home / ".claude" / "statusline" / "accounts.json").write_text(json.dumps(settings))
+        seed_account(self.home, self.config, "org-work", "Acme's Organization")
+        run("usage.py", self.home, stdin=status_input("s1", 10, 20), extra_env=self.env)
+        seed_account(self.home, self.config, "org-home", "someone@gmail.com's Organization")
+        _, out, _ = run("usage.py", self.home, stdin=status_input("s2", 90, 95, NOW + 5 * 86400),
+                        extra_env=self.env)
+        return out.strip()
+
+    def test_compact_setting_shortens_the_words(self):
+        first, second = self.two_accounts_line({"compact": True}).split(" | ")
+        self.assertTrue(first.startswith("Usg · someone: 5h 10% (resets "), first)
+        self.assertTrue(first.endswith(", wk 5%"), first)
+        self.assertEqual(second, "Acme: 5h 90%, wk 80% (0m)")
+
+    def test_compact_needs_a_real_true(self):
+        for not_true in ("yes", "true", 1, None, False):
+            line = self.two_accounts_line({"compact": not_true})
+            self.assertTrue(line.startswith("Usage left · someone: "), (not_true, line))
+            self.assertTrue(line.endswith("Acme: 5h 90%, week 80% (0m ago)"), (not_true, line))
 
     def test_an_idle_redraw_never_overwrites_newer_numbers(self):
         seed_account(self.home, self.config, "org-work", "Acme's Organization")
@@ -97,7 +119,7 @@ class StatusLineTest(unittest.TestCase):
         (self.home / ".claude" / "statusline" / "accounts.json").write_text(json.dumps(
             {"anchors": {"org-old": {"week_reset": week_reset - 7 * 86400, "orgName": "Old's Organization"}}}))
         _, out, _ = run("usage.py", self.home, stdin=status_input("s1", 5, 5, week_reset), extra_env=self.env)
-        self.assertTrue(out.startswith("Usage · Old: "), out)
+        self.assertTrue(out.startswith("Usage left · Old: "), out)
 
     def test_no_numbers_yet_has_no_usage_left_prefix(self):
         seed_account(self.home, self.config, "org-work", "Acme's Organization")
@@ -201,14 +223,14 @@ class CodexTest(unittest.TestCase):
         (self.home / ".claude" / "statusline").mkdir(parents=True, exist_ok=True)
         (self.home / ".claude" / "statusline" / "accounts.json").write_text(json.dumps({"codex": {"label": "GPT"}}))
         last = self.draw().split(" | ")[-1]
-        self.assertEqual(last, "GPT: 5h 100%, wk 81% (2m ago)")
+        self.assertEqual(last, "GPT: 5h 100%, week 81% (2m ago)")
 
     def test_codex_is_called_codex_even_with_a_catch_all_rule(self):
         write_codex_log(self.codex, "rollout-a.jsonl", [codex_limits_record(50, 50)])
         (self.home / ".claude" / "statusline" / "accounts.json").write_text(
             json.dumps({"rules": [{"all": [], "label": "Org"}]}))
         parts = self.draw().split(" | ")
-        self.assertTrue(parts[0].startswith("Usage · Org: "), parts)
+        self.assertTrue(parts[0].startswith("Usage left · Org: "), parts)
         self.assertTrue(parts[-1].startswith("Codex: 5h 50%"), parts)
 
     def test_codex_home_can_move(self):
@@ -219,7 +241,7 @@ class CodexTest(unittest.TestCase):
     def test_the_most_recently_written_codex_log_wins(self):
         write_codex_log(self.codex, "rollout-z-started-later.jsonl", [codex_limits_record(0, 50)], mtime=NOW - 3600, day="25")
         write_codex_log(self.codex, "rollout-a-resumed.jsonl", [codex_limits_record(0, 10)], mtime=NOW - 60, day="24")
-        self.assertIn("Codex: 5h 100%, wk 90%", self.draw())
+        self.assertIn("Codex: 5h 100%, week 90%", self.draw())
 
     def test_a_resumed_session_from_weeks_ago_is_still_found(self):
         for day in range(10, 26):  # Codex used on 16 later days, each with an old reading
@@ -228,7 +250,7 @@ class CodexTest(unittest.TestCase):
         folder = self.codex / "sessions" / "2026" / "10" / "28"  # a session begun four weeks ago, just resumed
         folder.mkdir(parents=True)
         (folder / "rollout-old.jsonl").write_text(json.dumps(codex_limits_record(0, 80)) + "\n")
-        self.assertTrue(self.draw().endswith("Codex: 5h 100%, wk 20% (2m ago)"))
+        self.assertTrue(self.draw().endswith("Codex: 5h 100%, week 20% (2m ago)"))
 
     def test_broken_or_limitless_codex_logs_are_ignored(self):
         write_codex_log(self.codex, "rollout-a.jsonl", [
@@ -238,7 +260,7 @@ class CodexTest(unittest.TestCase):
         ])
         line = self.draw()
         self.assertNotIn("Codex", line)
-        self.assertTrue(line.startswith("Usage · Acme: "), line)
+        self.assertTrue(line.startswith("Usage left · Acme: "), line)
 
     def test_only_usage_numbers_leave_a_codex_log(self):
         write_codex_log(self.codex, "rollout-a.jsonl", [
@@ -257,8 +279,8 @@ class CodexTest(unittest.TestCase):
         bad_reset["payload"]["rate_limits"]["secondary"]["resets_at"] = "soon"
         write_codex_log(self.codex, "rollout-a.jsonl", [bad_reset])
         line = self.draw()
-        self.assertTrue(line.startswith("Usage · Acme: "), line)
-        self.assertTrue(line.endswith("Codex: 5h 100%, wk 81% (2m ago)"), line)
+        self.assertTrue(line.startswith("Usage left · Acme: "), line)
+        self.assertTrue(line.endswith("Codex: 5h 100%, week 81% (2m ago)"), line)
         saved = json.loads((self.home / ".claude" / "statusline" / "usage" / "codex.json").read_text())
         self.assertIsNone(saved["week_resets"])
 
@@ -267,24 +289,24 @@ class CodexTest(unittest.TestCase):
         nan_line = json.dumps(good).replace('"used_percent": 19', '"used_percent": NaN')
         write_codex_log(self.codex, "rollout-a.jsonl", [nan_line])
         line = self.draw()
-        self.assertTrue(line.startswith("Usage · Acme: "), line)
-        self.assertTrue(line.endswith("Codex: 5h 100%, wk ? (2m ago)"), line)
+        self.assertTrue(line.startswith("Usage left · Acme: "), line)
+        self.assertTrue(line.endswith("Codex: 5h 100%, week ? (2m ago)"), line)
 
     def test_a_huge_number_in_a_codex_record_is_skipped(self):
         huge = json.dumps(codex_limits_record(0, 19)).replace('"used_percent": 19', '"used_percent": 1' + "0" * 400)
         write_codex_log(self.codex, "rollout-a.jsonl", [huge])
         line = self.draw()
-        self.assertTrue(line.startswith("Usage · Acme: "), line)
-        self.assertTrue(line.endswith("Codex: 5h 100%, wk ? (2m ago)"), line)
+        self.assertTrue(line.startswith("Usage left · Acme: "), line)
+        self.assertTrue(line.endswith("Codex: 5h 100%, week ? (2m ago)"), line)
 
     def test_a_reading_from_the_future_shows_zero_age(self):
         write_codex_log(self.codex, "rollout-a.jsonl", [codex_limits_record(0, 19, seconds_ago=-3 * 3600)])
-        self.assertTrue(self.draw().endswith("Codex: 5h 100%, wk 81% (0m ago)"))
+        self.assertTrue(self.draw().endswith("Codex: 5h 100%, week 81% (0m ago)"))
 
     def test_a_deeply_nested_line_falls_back_to_the_record_before_it(self):
         deep = '{"rate_limits": ' + "[" * 200000 + "]" * 200000 + "}"
         write_codex_log(self.codex, "rollout-a.jsonl", [codex_limits_record(0, 19), deep])
-        self.assertTrue(self.draw().endswith("Codex: 5h 100%, wk 81% (2m ago)"))
+        self.assertTrue(self.draw().endswith("Codex: 5h 100%, week 81% (2m ago)"))
 
     def test_a_far_future_reading_ages_from_when_it_was_seen(self):
         record = codex_limits_record(0, 19)
@@ -296,7 +318,7 @@ class CodexTest(unittest.TestCase):
 
     def test_numbers_older_than_two_days_show_their_age_in_days(self):
         write_codex_log(self.codex, "rollout-a.jsonl", [codex_limits_record(0, 19, seconds_ago=3 * 86400 + 60)])
-        self.assertTrue(self.draw().endswith("Codex: 5h 100%, wk 81% (3d ago)"))
+        self.assertTrue(self.draw().endswith("Codex: 5h 100%, week 81% (3d ago)"))
 
     def test_an_unchanged_codex_log_is_not_read_again(self):
         write_codex_log(self.codex, "rollout-a.jsonl", [codex_limits_record(5, 5)])

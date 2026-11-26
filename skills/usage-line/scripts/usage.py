@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Claude Code status line: usage left on every Claude account you use, so you know where to switch.
 
-Example line:
-    Usage · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h ago)
+Example line, and the same line with "compact": true in accounts.json:
+    Usage left · Work: 5h 62% (resets 3:40pm), week 48% | Personal: 5h 100%, week 12% (2h ago)
+    Usg · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h)
 
 Every percent is what is left, not what is used. "(2h ago)" is how old another account's
 numbers are: when they last changed, which is when a session on that account last replied.
@@ -22,6 +23,7 @@ How it works:
 Optional settings in ~/.claude/statusline/accounts.json (see references/accounts.example.json):
 - "rules": short labels and a cmux workspace color, matched on the account's org name.
 - "<orgId>": {"label": "..."}: a label for one exact account.
+- "compact": true: the short wording ("Usg", "wk", "(2h)") for people who know what it means.
 - "anchors": one known weekly reset per account, which fixes the label right after a /login
   (a running window keeps its old account's numbers until its next reply).
 
@@ -58,6 +60,11 @@ CODEX_TAIL_BYTES = 512 * 1024  # logs reach several MB; the latest usage record 
 FIVE_HOUR_MINUTES, WEEK_MINUTES = 300, 10080
 
 GREEN, YELLOW, RED, DIM, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
+
+# The line's words, spelled out by default so a first look explains itself. "compact": true in
+# accounts.json picks the short set for people who already know what each part means.
+SPELLED_OUT = {"prefix": "Usage left", "week": "week", "ago": " ago"}
+COMPACT = {"prefix": "Usg", "week": "wk", "ago": ""}
 
 
 def write_json(path, data):
@@ -394,13 +401,18 @@ def reset_clock(resets_at):
     return time.strftime("%-I:%M%p", time.localtime(resets_at)).lower()
 
 
-def age_text(seconds):
+def age_text(seconds, suffix=" ago"):
     seconds = max(0, seconds)  # a clock that runs ahead must not print "-205m ago"
     if seconds < 3600:
-        return f"{int(seconds // 60)}m ago"
+        return f"{int(seconds // 60)}m{suffix}"
     if seconds < 2 * 86400:
-        return f"{int(seconds // 3600)}h ago"
-    return f"{int(seconds // 86400)}d ago"
+        return f"{int(seconds // 3600)}h{suffix}"
+    return f"{int(seconds // 86400)}d{suffix}"
+
+
+def line_words(labels):
+    """Only a real true picks the short words, so a typo like "compact": "no" stays spelled out."""
+    return COMPACT if isinstance(labels, dict) and labels.get("compact") is True else SPELLED_OUT
 
 
 def main():
@@ -458,6 +470,7 @@ def draw():
     except Exception:
         pass  # a change in Codex's log format must never take the Claude numbers down with it
 
+    words = line_words(labels)
     parts = []
     showing_numbers = False
     if org_id:
@@ -467,7 +480,7 @@ def draw():
             five_text = (f"{window_text('5h', five.get('used_percentage'), five.get('resets_at'), now)}"
                          f" (resets {reset_clock(five.get('resets_at'))}), " if five else "")
             text = (f"{here}: {five_text}"
-                    f"{window_text('wk', week.get('used_percentage'), week.get('resets_at'), now)}")
+                    f"{window_text(words['week'], week.get('used_percentage'), week.get('resets_at'), now)}")
         else:
             text = f"{here}: waiting for first reply"
         parts.append(text)
@@ -483,12 +496,12 @@ def draw():
         name = label_for(other_id, other.get("orgName"), labels)
         five_text = (f"{window_text('5h', other.get('five_used'), other.get('five_resets'), now)}, "
                      if other.get("five_used") is not None else "")
-        parts.append(f"{name}: {five_text}{window_text('wk', other.get('week_used'), other.get('week_resets'), now)}"
-                     f" {DIM}({age_text(age)}){RESET}")
+        week_text = window_text(words["week"], other.get("week_used"), other.get("week_resets"), now)
+        parts.append(f"{name}: {five_text}{week_text} {DIM}({age_text(age, words['ago'])}){RESET}")
 
-    # Every percent is what is left. The prefix once said "Usage left"; it was cut to "Usage"
-    # to keep the line short, so the README and SKILL.md carry that meaning instead.
-    prefix = f"{DIM}Usage ·{RESET} " if showing_numbers else ""
+    # "left" is said once, up front, so every percent reads the same way: a bare "5h 0%" on
+    # another account was easy to misread as 0% used. Compact drops it for people who know.
+    prefix = f"{DIM}{words['prefix']} ·{RESET} " if showing_numbers else ""
     print(prefix + " | ".join(parts) if parts else "usage: checking account")
 
 

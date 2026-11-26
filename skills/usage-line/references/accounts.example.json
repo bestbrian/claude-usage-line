@@ -6,6 +6,7 @@
   ],
   "00000000-0000-0000-0000-000000000000": {"label": "Side project"},
   "codex": {"label": "GPT"},
+  "compact": false,
   "anchors": {
     "00000000-0000-0000-0000-000000000000": {"week_reset": 1795600800, "orgName": "Side project's Organization"}
   }
