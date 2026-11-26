@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """Claude Code status line: usage left on every Claude account you use, so you know where to switch.
 
-Example line:
-    Work: 5h 62% left (resets 3:40pm), week 48% left  |  Personal: 5h 100%, week 12% (2h ago)
+Example line, and the same line with "compact": true in accounts.json:
+    Usage left · Work: 5h 62% (resets 3:40pm), week 48% | Personal: 5h 100%, week 12% (2h ago)
+    Usg · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h)
+
+Every percent is what is left, not what is used. "(2h ago)" is how old another account's
+numbers are: when they last changed, which is when a session on that account last replied.
 
 How it works:
 - Claude Code passes this script the session's usage for its own account: the 5-hour
@@ -19,13 +23,16 @@ How it works:
 Optional settings in ~/.claude/statusline/accounts.json (see references/accounts.example.json):
 - "rules": short labels and a cmux workspace color, matched on the account's org name.
 - "<orgId>": {"label": "..."}: a label for one exact account.
+- "compact": true: the short wording ("Usg", "wk", "(2h)") for people who know what it means.
 - "anchors": one known weekly reset per account, which fixes the label right after a /login
   (a running window keeps its old account's numbers until its next reply).
 
 Standard library only. It never prints anything but the status line, and never reads tokens.
 """
+import datetime
 import fcntl
 import json
+import math
 import os
 import pathlib
 import re
@@ -44,7 +51,20 @@ SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 SAFE_COLOR = re.compile(r"#?[A-Za-z0-9]{1,32}")  # "#10B981" or a name like "Purple"; never a "-flag"
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
+CODEX_ID = "codex"  # Codex's numbers are saved as usage/codex.json and drawn like one more account
+# Newest day folders under ~/.codex/sessions to look through. A resumed session keeps writing to the
+# folder of the day it began, so a week is too short for anyone who resumes old sessions.
+CODEX_DAYS_SEARCHED = 31
+CODEX_LOGS_TRIED = 5  # newest logs tried for a usage record before giving up
+CODEX_TAIL_BYTES = 512 * 1024  # logs reach several MB; the latest usage record is near the end
+FIVE_HOUR_MINUTES, WEEK_MINUTES = 300, 10080
+
 GREEN, YELLOW, RED, DIM, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
+
+# The line's words, spelled out by default so a first look explains itself. "compact": true in
+# accounts.json picks the short set for people who already know what each part means.
+SPELLED_OUT = {"prefix": "Usage left", "week": "week", "ago": " ago"}
+COMPACT = {"prefix": "Usg", "week": "wk", "ago": ""}
 
 
 def write_json(path, data):
@@ -141,6 +161,113 @@ def current_account():
         except Exception:
             pass
     return cached
+
+
+def codex_home():
+    return pathlib.Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+
+
+def newest_codex_logs():
+    """Codex session logs from the newest day folders, most recently written first. Logs live in
+    sessions/YYYY/MM/DD/, and a resumed session keeps writing to the folder of the day it began,
+    so the newest file by name is not always the newest by use."""
+    def newest_first(folder):
+        try:
+            return sorted(folder.iterdir(), key=lambda path: path.name, reverse=True)
+        except OSError:
+            return []
+    day_folders = [day for year in newest_first(codex_home() / "sessions")
+                   for month in newest_first(year) for day in newest_first(month)][:CODEX_DAYS_SEARCHED]
+    logs = []
+    for day in day_folders:
+        for log in newest_first(day):
+            try:
+                if log.suffix == ".jsonl" and log.is_file():
+                    logs.append((log.stat().st_mtime, log))
+            except OSError:
+                pass
+    return [log for _, log in sorted(logs, reverse=True)]
+
+
+def last_codex_limits(log):
+    """(timestamp, rate_limits) from the last usage record in one Codex log, or None. Only the end of
+    the file is read, only lines that mention rate_limits are parsed, and only numbers are kept."""
+    try:
+        with open(log, "rb") as handle:
+            handle.seek(max(0, log.stat().st_size - CODEX_TAIL_BYTES))
+            tail = handle.read().decode("utf-8", "replace")
+    except OSError:
+        return None
+    for line in reversed(tail.splitlines()):
+        if '"rate_limits"' not in line:
+            continue
+        try:
+            record = json.loads(line)
+        except (ValueError, RecursionError):
+            continue  # the first line of a tail is usually cut off; a freak line can nest too deep
+        payload = record.get("payload") if isinstance(record, dict) else None
+        limits = payload.get("rate_limits") if isinstance(payload, dict) else None
+        if isinstance(limits, dict) and any(codex_windows(limits)):
+            return record.get("timestamp"), limits
+    return None
+
+
+def codex_windows(limits):
+    """(five_hour, weekly) windows from Codex's rate_limits, matched by length rather than by
+    "primary"/"secondary", since the order is Codex's to change."""
+    by_length = {}
+    for window in (limits.get("primary"), limits.get("secondary")):
+        if isinstance(window, dict) and finite_number(window.get("window_minutes")) is not None \
+                and finite_number(window.get("used_percent")) is not None:
+            by_length[int(window["window_minutes"])] = window
+    return by_length.get(FIVE_HOUR_MINUTES), by_length.get(WEEK_MINUTES)
+
+
+def finite_number(value):
+    """The value when it is a real, finite number, else None. Python's json reads NaN and Infinity,
+    and a saved NaN would break every redraw until Codex wrote again."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return value if math.isfinite(value) else None
+    except OverflowError:  # an int too big for a float, such as 10**400
+        return None
+
+
+def epoch_from_iso(text):
+    try:
+        return datetime.datetime.fromisoformat(str(text).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def refresh_codex():
+    """Copy Codex's latest usage into usage/codex.json, so the line draws it like another account.
+    The newest log's path and write time are remembered, so an idle redraw reads nothing."""
+    logs = newest_codex_logs()
+    if not logs:
+        return
+    marker = BASE / "codex-source.json"
+    source = [str(logs[0]), logs[0].stat().st_mtime]
+    if read_json(marker) == source:
+        return
+    write_json(marker, source)
+    for log in logs[:CODEX_LOGS_TRIED]:
+        found = last_codex_limits(log)
+        if found:
+            break
+    else:
+        return
+    timestamp, limits = found
+    five, week = codex_windows(limits)
+    write_json(USAGE_DIR / f"{CODEX_ID}.json", {
+        "orgName": "Codex",
+        "five_used": finite_number((five or {}).get("used_percent")),
+        "five_resets": finite_number((five or {}).get("resets_at")),
+        "week_used": finite_number((week or {}).get("used_percent")),
+        "week_resets": finite_number((week or {}).get("resets_at")),
+        # Never later than now: a Codex clock that runs ahead would otherwise freeze the age at 0m.
+        "at": min(epoch_from_iso(timestamp) or log.stat().st_mtime, time.time())})
 
 
 WEEK_S = 7 * 86400
@@ -245,6 +372,9 @@ def note_session(session_id, org_id, label, now):
 
 
 def label_for(org_id, org_name, labels):
+    if org_id == CODEX_ID:
+        # Never run Codex through the Claude rules: a catch-all rule would call it "Org".
+        return clean(((labels or {}).get(CODEX_ID) or {}).get("label") or "Codex")
     custom = (labels or {}).get(org_id, {}).get("label") or account_rule(org_name).get("label")
     if custom:
         return clean(custom)
@@ -271,10 +401,18 @@ def reset_clock(resets_at):
     return time.strftime("%-I:%M%p", time.localtime(resets_at)).lower()
 
 
-def age_text(seconds):
+def age_text(seconds, suffix=" ago"):
+    seconds = max(0, seconds)  # a clock that runs ahead must not print "-205m ago"
     if seconds < 3600:
-        return f"{int(seconds // 60)}m ago"
-    return f"{int(seconds // 3600)}h ago"
+        return f"{int(seconds // 60)}m{suffix}"
+    if seconds < 2 * 86400:
+        return f"{int(seconds // 3600)}h{suffix}"
+    return f"{int(seconds // 86400)}d{suffix}"
+
+
+def line_words(labels):
+    """Only a real true picks the short words, so a typo like "compact": "no" stays spelled out."""
+    return COMPACT if isinstance(labels, dict) and labels.get("compact") is True else SPELLED_OUT
 
 
 def main():
@@ -327,6 +465,12 @@ def draw():
         except Exception:
             pass
 
+    try:
+        refresh_codex()
+    except Exception:
+        pass  # a change in Codex's log format must never take the Claude numbers down with it
+
+    words = line_words(labels)
     parts = []
     showing_numbers = False
     if org_id:
@@ -336,12 +480,13 @@ def draw():
             five_text = (f"{window_text('5h', five.get('used_percentage'), five.get('resets_at'), now)}"
                          f" (resets {reset_clock(five.get('resets_at'))}), " if five else "")
             text = (f"{here}: {five_text}"
-                    f"{window_text('week', week.get('used_percentage'), week.get('resets_at'), now)}")
+                    f"{window_text(words['week'], week.get('used_percentage'), week.get('resets_at'), now)}")
         else:
             text = f"{here}: waiting for first reply"
         parts.append(text)
 
-    for path in sorted(USAGE_DIR.glob("*.json")) if USAGE_DIR.exists() else []:
+    saved_accounts = sorted(USAGE_DIR.glob("*.json")) if USAGE_DIR.exists() else []
+    for path in sorted(saved_accounts, key=lambda path: path.stem == CODEX_ID):  # Codex last
         other_id = path.stem
         if other_id == org_id:
             continue
@@ -351,13 +496,13 @@ def draw():
         name = label_for(other_id, other.get("orgName"), labels)
         five_text = (f"{window_text('5h', other.get('five_used'), other.get('five_resets'), now)}, "
                      if other.get("five_used") is not None else "")
-        parts.append(f"{name}: {five_text}{window_text('week', other.get('week_used'), other.get('week_resets'), now)}"
-                     f" {DIM}({age_text(age)}){RESET}")
+        week_text = window_text(words["week"], other.get("week_used"), other.get("week_resets"), now)
+        parts.append(f"{name}: {five_text}{week_text} {DIM}({age_text(age, words['ago'])}){RESET}")
 
     # "left" is said once, up front, so every percent reads the same way: a bare "5h 0%" on
-    # another account was easy to misread as 0% used.
-    prefix = f"{DIM}Usage left ·{RESET} " if showing_numbers else ""
-    print(prefix + "  |  ".join(parts) if parts else "usage: checking account")
+    # another account was easy to misread as 0% used. Compact drops it for people who know.
+    prefix = f"{DIM}{words['prefix']} ·{RESET} " if showing_numbers else ""
+    print(prefix + " | ".join(parts) if parts else "usage: checking account")
 
 
 if __name__ == "__main__":

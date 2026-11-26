@@ -7,8 +7,8 @@
     {
       "name": "usage-line",
       "source": "./",
-      "description": "Status line showing the usage left on every Claude account you use.",
-      "version": "0.1.0"
+      "description": "Status line showing the usage left on every Claude account you use, plus Codex.",
+      "version": "0.2.0"
     }
   ],
   "description": "Claude Code usage status line: see your 5-hour and weekly limits on every account at a glance."

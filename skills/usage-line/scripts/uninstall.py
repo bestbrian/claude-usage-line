@@ -21,7 +21,7 @@ from install import HOME, STATUS_LINE, TARGET_DIR, backup, read_settings, write_
 
 OWN_FOLDERS = ("usage", "readings", "cmux")
 OWN_FILE_PATTERNS = ("usage.py", "usage.py.bak-usage-line-*", "account-*.json", "sessions.json",
-                     "sessions.lock", "*.[0-9]*.tmp")  # temp files are <name>.<pid>.tmp
+                     "sessions.lock", "codex-source.json", "*.[0-9]*.tmp")  # temp files are <name>.<pid>.tmp
 
 
 def purge() -> None:
