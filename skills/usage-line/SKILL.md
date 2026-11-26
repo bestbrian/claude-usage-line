@@ -8,8 +8,10 @@ description: Install, label and repair the Claude Code usage status line, which 
 A Claude Code status line that shows the usage left on the account the window is on, then the last-seen numbers for every other account:
 
 ```
-Usage left · Work: 5h 62% (resets 3:40pm), week 48%  |  Personal: 5h 100%, week 12% (2h ago)
+Usage · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h ago)
 ```
+
+Every percent is what is left, not what is used. `wk` is the weekly limit. `(2h ago)` is how old another account's numbers are: they update when a session on that account replies.
 
 Green means 50% or more left, yellow 20 to 49%, red under 20%.
 

@@ -2,7 +2,10 @@
 """Claude Code status line: usage left on every Claude account you use, so you know where to switch.
 
 Example line:
-    Work: 5h 62% left (resets 3:40pm), week 48% left  |  Personal: 5h 100%, week 12% (2h ago)
+    Usage · Work: 5h 62% (resets 3:40pm), wk 48% | Personal: 5h 100%, wk 12% (2h ago)
+
+Every percent is what is left, not what is used. "(2h ago)" is how old another account's
+numbers are: when they last changed, which is when a session on that account last replied.
 
 How it works:
 - Claude Code passes this script the session's usage for its own account: the 5-hour
@@ -464,7 +467,7 @@ def draw():
             five_text = (f"{window_text('5h', five.get('used_percentage'), five.get('resets_at'), now)}"
                          f" (resets {reset_clock(five.get('resets_at'))}), " if five else "")
             text = (f"{here}: {five_text}"
-                    f"{window_text('week', week.get('used_percentage'), week.get('resets_at'), now)}")
+                    f"{window_text('wk', week.get('used_percentage'), week.get('resets_at'), now)}")
         else:
             text = f"{here}: waiting for first reply"
         parts.append(text)
@@ -480,13 +483,13 @@ def draw():
         name = label_for(other_id, other.get("orgName"), labels)
         five_text = (f"{window_text('5h', other.get('five_used'), other.get('five_resets'), now)}, "
                      if other.get("five_used") is not None else "")
-        parts.append(f"{name}: {five_text}{window_text('week', other.get('week_used'), other.get('week_resets'), now)}"
+        parts.append(f"{name}: {five_text}{window_text('wk', other.get('week_used'), other.get('week_resets'), now)}"
                      f" {DIM}({age_text(age)}){RESET}")
 
-    # "left" is said once, up front, so every percent reads the same way: a bare "5h 0%" on
-    # another account was easy to misread as 0% used.
-    prefix = f"{DIM}Usage left ·{RESET} " if showing_numbers else ""
-    print(prefix + "  |  ".join(parts) if parts else "usage: checking account")
+    # Every percent is what is left. The prefix once said "Usage left"; it was cut to "Usage"
+    # to keep the line short, so the README and SKILL.md carry that meaning instead.
+    prefix = f"{DIM}Usage ·{RESET} " if showing_numbers else ""
+    print(prefix + " | ".join(parts) if parts else "usage: checking account")
 
 
 if __name__ == "__main__":
