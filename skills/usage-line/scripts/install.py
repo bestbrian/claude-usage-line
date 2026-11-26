@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import shutil
 import sys
@@ -58,28 +59,48 @@ def install_script(dry_run: bool) -> str:
     return f"script: installed at {TARGET_SCRIPT}{note}"
 
 
+def read_settings(settings_path: pathlib.Path):
+    """(settings, problem): the parsed object, or None and why it can't be used."""
+    if not settings_path.exists():
+        return {}, None
+    try:
+        settings = json.loads(settings_path.read_text() or "{}")
+    except ValueError:
+        return None, "not valid JSON"
+    if not isinstance(settings, dict):
+        return None, "not a JSON object"
+    return settings, None
+
+
+def write_settings(settings_path: pathlib.Path, settings: dict) -> None:
+    """Replace settings.json in one step, keeping its permissions (people lock it to 600 when it
+    holds keys under "env"). A symlinked settings.json (a dotfiles setup) is written through, so
+    the link survives."""
+    real_path = settings_path.resolve()
+    real_path.parent.mkdir(parents=True, exist_ok=True)
+    temp = real_path.with_name(real_path.name + ".tmp-usage-line")
+    descriptor = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "w") as handle:
+        handle.write(json.dumps(settings, indent=2) + "\n")
+    if real_path.exists():
+        shutil.copymode(real_path, temp)
+    temp.replace(real_path)
+
+
 def install_settings(config_dir: pathlib.Path, replace: bool, dry_run: bool) -> tuple[bool, str]:
     settings_path = config_dir / "settings.json"
-    if settings_path.exists():
-        try:
-            settings = json.loads(settings_path.read_text() or "{}")
-        except ValueError:
-            return False, f"{settings_path}: not valid JSON, left alone. Fix it, then run this again."
-    else:
-        settings = {}
+    settings, problem = read_settings(settings_path)
+    if problem:
+        return False, f"{settings_path}: {problem}, left alone. Fix it, then run this again."
     current = settings.get("statusLine")
     if current == STATUS_LINE:
         return True, f"{settings_path}: already set up"
     if current and not replace:
         return False, (f"{settings_path}: already has a different status line ({json.dumps(current)}). "
                        "Run again with --replace to swap it; a backup is kept.")
-    note = f" (backup {backup(settings_path, dry_run)})" if settings_path.exists() else ""
+    note = f" (backup {backup(settings_path.resolve(), dry_run)})" if settings_path.exists() else ""
     if not dry_run:
-        config_dir.mkdir(parents=True, exist_ok=True)
-        updated = {**settings, "statusLine": STATUS_LINE}
-        temp = settings_path.with_suffix(".json.tmp-usage-line")
-        temp.write_text(json.dumps(updated, indent=2) + "\n")
-        temp.replace(settings_path)
+        write_settings(settings_path, {**settings, "statusLine": STATUS_LINE})
     return True, f"{settings_path}: status line set{note}"
 
 

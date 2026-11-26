@@ -24,9 +24,11 @@ Optional settings in ~/.claude/statusline/accounts.json (see references/accounts
 
 Standard library only. It never prints anything but the status line, and never reads tokens.
 """
+import fcntl
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -36,6 +38,11 @@ HOME = pathlib.Path.home()
 BASE = HOME / ".claude" / "statusline"
 USAGE_DIR = BASE / "usage"
 ACCOUNT_MAX_AGE_S = 120
+READINGS_MAX_AGE_S = 7 * 86400
+
+SAFE_ID = re.compile(r"[A-Za-z0-9_.-]{1,128}")
+SAFE_COLOR = re.compile(r"#?[A-Za-z0-9]{1,32}")  # "#10B981" or a name like "Purple"; never a "-flag"
+CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 GREEN, YELLOW, RED, DIM, RESET = "\033[32m", "\033[33m", "\033[31m", "\033[2m", "\033[0m"
 
@@ -52,6 +59,18 @@ def read_json(path):
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def safe_id(value):
+    """The id if it is safe to use as a file name, else None. Session and org ids come from Claude
+    Code and accounts.json, but they still name files, so a path can never slip through."""
+    text = "" if value is None else str(value)
+    return text if SAFE_ID.fullmatch(text) and text not in (".", "..") else None
+
+
+def clean(text):
+    """Drop terminal control characters, so an org name can't move the cursor or retitle the window."""
+    return CONTROL_CHARS.sub("", str(text or ""))
 
 
 def account_cache_path():
@@ -79,7 +98,7 @@ def set_cmux_color(org_name):
     """Color this cmux workspace to match the account, only when it changed."""
     workspace = os.environ.get("CMUX_WORKSPACE_ID")
     wanted = account_rule(org_name).get("cmux_color")
-    if not workspace or not wanted:
+    if not workspace or not isinstance(wanted, str) or not SAFE_COLOR.fullmatch(wanted):
         return
     marker = BASE / "cmux" / f"{workspace.replace('/', '_')}.txt"
     try:
@@ -88,11 +107,11 @@ def set_cmux_color(org_name):
     except Exception:
         pass
     cmux = shutil.which("cmux") or "/Applications/cmux.app/Contents/Resources/bin/cmux"
-    result = subprocess.run([cmux, "workspace-action", "--action", "set-color", "--color", wanted,
-                             "--workspace", workspace], capture_output=True, text=True, timeout=10)
-    if result.returncode == 0:
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(wanted)
+    # Mark it tried before calling, so a failing cmux costs one attempt, not one on every redraw.
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(wanted)
+    subprocess.run([cmux, "workspace-action", "--action", "set-color", "--color", wanted,
+                    "--workspace", workspace], capture_output=True, text=True, timeout=3)
 
 
 def refresh_account(cache_path):
@@ -112,6 +131,9 @@ def current_account():
     cache_path = account_cache_path()
     cached = read_json(cache_path)
     if not cached or time.time() - cached.get("at", 0) > ACCOUNT_MAX_AGE_S:
+        # Stamp the attempt first: when `claude auth status` fails (logged out, API key, no claude
+        # on PATH), this keeps it to one try every 2 minutes instead of one on every redraw.
+        write_json(cache_path, {**(cached or {}), "at": time.time()})
         try:
             subprocess.Popen([sys.executable, "-I", __file__, "--refresh-account", str(cache_path)],
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -166,7 +188,9 @@ def is_newer(saved, five, week):
 def reading_state(session_id, five, week):
     """"first", "same" or "changed": how this window's numbers compare with the last time it drew.
     An idle window redraws the same numbers, so only a change means a new reply, even when the
-    percent went DOWN (after a limit reset the bar once stayed at 75% while the real number was 59%). One small file per session, so windows never overwrite each other's."""
+    percent went DOWN (after a limit reset the bar once stayed at 75% while the real number was
+    59%). One small file per session, so windows never overwrite each other's."""
+    session_id = safe_id(session_id)
     if not session_id:
         return "first"
     path = BASE / "readings" / f"{session_id}.json"
@@ -177,31 +201,54 @@ def reading_state(session_id, five, week):
         return "same"
     write_json(path, reading)
     if previous is None:
+        prune_readings()
         return "first"
     week_moved = reading[0] is not None and reading[:2] != previous[:2]
     five_moved = reading[2] is not None and reading[2:] != previous[2:]
     return "changed" if week_moved or five_moved else "same"  # a limit that just ran out of time drops off
 
 
+def prune_readings():
+    """Each session leaves one small reading file. Drop the ones idle for a week. Runs once per new
+    session, so the folder never grows without end."""
+    cutoff = time.time() - READINGS_MAX_AGE_S
+    for path in (BASE / "readings").glob("*.json"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                path.unlink()
+        except OSError:
+            pass
+
+
 def note_session(session_id, org_id, label, now):
-    """Remember which account each session is really on (sessions.json), for checking by hand."""
+    """Remember which account each session is really on (sessions.json), for checking by hand.
+    Many windows share the file, so the read and write happen under a lock; a window that finds
+    it locked skips this draw and notes itself on the next one."""
+    session_id = safe_id(session_id)
     if not session_id:
         return
-    path = BASE / "sessions.json"
-    sessions = read_json(path) or {}
-    seen = sessions.get(session_id) or {}
-    if seen.get("org") == org_id and now - seen.get("at", 0) < 60:
-        return
-    sessions = {sid: info for sid, info in sessions.items() if now - info.get("at", 0) < 86400}
-    sessions[session_id] = {"org": org_id, "label": label, "at": now}
-    write_json(path, sessions)
+    BASE.mkdir(parents=True, exist_ok=True)
+    with open(BASE / "sessions.lock", "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return
+        path = BASE / "sessions.json"
+        sessions = read_json(path) or {}
+        seen = sessions.get(session_id) or {}
+        if seen.get("org") == org_id and now - seen.get("at", 0) < 60:
+            return
+        sessions = {sid: info for sid, info in sessions.items()
+                    if isinstance(info, dict) and now - info.get("at", 0) < 86400}
+        sessions[session_id] = {"org": org_id, "label": label, "at": now}
+        write_json(path, sessions)
 
 
 def label_for(org_id, org_name, labels):
     custom = (labels or {}).get(org_id, {}).get("label") or account_rule(org_name).get("label")
     if custom:
-        return custom
-    name = (org_name or "").replace("'s Organization", "")
+        return clean(custom)
+    name = clean(org_name).replace("'s Organization", "")
     return name.split("@")[0] or f"acct {org_id[:4]}"
 
 
@@ -231,12 +278,23 @@ def age_text(seconds):
 
 
 def main():
+    os.umask(0o077)  # saved files hold org names, which can include an email: owner-only
     if len(sys.argv) == 3 and sys.argv[1] == "--refresh-account":
         refresh_account(pathlib.Path(sys.argv[2]))
         return
     try:
+        draw()
+    except Exception:
+        # A status line must never go blank or dump a traceback, even with a broken accounts.json.
+        print("usage: unavailable (see the usage-line skill's troubleshooting)")
+
+
+def draw():
+    try:
         data = json.load(sys.stdin)
     except Exception:
+        data = {}
+    if not isinstance(data, dict):
         data = {}
     now = time.time()
     limits = data.get("rate_limits") or {}
@@ -252,6 +310,7 @@ def main():
     # is fixed per account, before trusting the folder.
     if org_id and week.get("resets_at"):
         org_id, org_name = route_by_anchor(org_id, org_name, week.get("resets_at"), labels)
+    org_id = safe_id(org_id)
 
     if org_id and (five or week):
         saved = read_json(USAGE_DIR / f"{org_id}.json")
@@ -279,7 +338,7 @@ def main():
             text = (f"{here}: {five_text}"
                     f"{window_text('week', week.get('used_percentage'), week.get('resets_at'), now)}")
         else:
-            text = f"{here}: usage shows after the first reply"
+            text = f"{here}: waiting for first reply"
         parts.append(text)
 
     for path in sorted(USAGE_DIR.glob("*.json")) if USAGE_DIR.exists() else []:

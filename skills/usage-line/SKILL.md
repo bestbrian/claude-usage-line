@@ -39,7 +39,7 @@ Show the person what it will change, then run it again without `--dry-run`.
 
 If a folder already has a different status line, the installer refuses and leaves it alone. Ask before using `--replace`, because their current status line goes away (a backup is kept next to settings.json).
 
-The line appears in each open window after its next reply. Until then it says "usage shows after the first reply".
+The line appears in each open window after its next reply. Until then that window's account says "waiting for first reply".
 
 ## Labels and colors (optional)
 
@@ -61,9 +61,10 @@ Only add anchors from a window you are sure of. A wrong anchor locks the swap in
 ## When something is wrong
 
 - **The line is missing:** check settings.json has `"statusLine"` with the command `python3 -I ~/.claude/statusline/usage.py`, and that the file exists. Rerun `install.py`.
+- **"usage: unavailable":** the script hit an error, almost always a broken `~/.claude/statusline/accounts.json`. Check it is valid JSON shaped like `references/accounts.example.json`.
 - **"usage: checking account" stays up:** the script asks `claude auth status --json` in the background. Run that command in the same folder. If it fails or says logged out, run `/login`.
 - **Another account's numbers look old:** they update only when a window on that account replies. The age in brackets says how old they are.
-- **To test the script by hand:** `echo '{"session_id":"t","rate_limits":{"five_hour":{"used_percentage":30,"resets_at":1999999999},"seven_day":{"used_percentage":40,"resets_at":1999999999}}}' | python3 -I ~/.claude/statusline/usage.py`
+- **To test the script by hand:** `echo '{}' | python3 -I ~/.claude/statusline/usage.py` draws the line from the saved numbers without changing them. Never pipe in made-up usage numbers: they would be saved as that account's real ones.
 - **To run the tests:** `cd scripts && python3 -m unittest test_usage_line`
 
 ## Uninstall
@@ -72,13 +73,13 @@ Only add anchors from a window you are sure of. A wrong anchor locks the swap in
 python3 scripts/uninstall.py [--config-dir ...] [--purge]
 ```
 
-It removes the status line only where it is this one. `--purge` also deletes `~/.claude/statusline` and the saved numbers.
+It removes the status line only where it is this one. `--purge` also deletes this tool's files in `~/.claude/statusline` (the script and the saved numbers). The person's `accounts.json` and any other files in that folder stay.
 
 ## What it stores
 
 Only in `~/.claude/statusline/`:
 - `usage/<orgId>.json`: each account's last numbers.
 - `account-*.json`: which account each login folder is on (org id and name).
-- `readings/` and `sessions.json`: small per-window notes.
+- `readings/` and `sessions.json`: small per-window notes. Readings idle for a week are deleted.
 
-It never reads tokens or sends anything anywhere.
+Files are created readable by their owner only, since an org name can contain an email address. It never reads tokens and never sends anything anywhere.
